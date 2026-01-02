@@ -1,0 +1,5 @@
+{
+  "name": "e-HisCheker STPM",
+  "description": "Sistem Penilaian Pintar Sejarah STPM with AI-powered grading and feedback using Gemini API.",
+  "requestFramePermissions": []
+}
