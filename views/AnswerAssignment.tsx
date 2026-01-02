@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { User, Assignment, Submission } from '../types';
 import { Card, Input, Button } from '../components/UI';
 import { geminiService } from '../services/geminiService';
@@ -11,37 +11,42 @@ interface AnswerAssignmentProps {
   onCancel: () => void;
 }
 
+type Step = 'A' | number; // 'A' for Section A, index for Section B questions
+
 const AnswerAssignment: React.FC<AnswerAssignmentProps> = ({ user, assignment, onSubmit, onCancel }) => {
+  const [currentStep, setCurrentStep] = useState<Step>('A');
   const [answersA, setAnswersA] = useState<string[]>(new Array(assignment.section_a_questions.length).fill(''));
   const [answersB, setAnswersB] = useState<string[]>(new Array(assignment.section_b_questions.length).fill(''));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  
+  // Timer State (in seconds)
+  const [timeLeft, setTimeLeft] = useState(1800); // 30 minutes = 1800s
 
-  const handleUpdateAnswerA = (index: number, value: string) => {
-    const updated = [...answersA];
-    updated[index] = value;
-    setAnswersA(updated);
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const handleUpdateAnswerB = (index: number, value: string) => {
-    const updated = [...answersB];
-    updated[index] = value;
-    setAnswersB(updated);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Prevent Copy/Paste/Right-click logic
+  const preventActions = (e: React.SyntheticEvent) => {
     e.preventDefault();
+    alert("Amaran: Fungsi salin, tampal dan klik kanan dimatikan semasa peperiksaan.");
+  };
+
+  const finishExam = useCallback(async () => {
     setIsSubmitting(true);
-    setStatusMessage('Menghantar jawapan...');
+    setStatusMessage('Menghantar jawapan akhir...');
 
     try {
-      setStatusMessage('AI sedang menyemak Bahagian A (Struktur)...');
+      setStatusMessage('AI sedang menyemak Bahagian A...');
       const structResult = await geminiService.gradeGranularStructural(
         assignment.section_a_questions,
         answersA
       );
 
-      setStatusMessage('AI sedang menyemak Bahagian B (Esei) mengikut Rubrik STPM...');
+      setStatusMessage('AI sedang menyemak Bahagian B...');
       const essayResult = await geminiService.gradeGranularEssay(
         assignment.section_b_questions,
         answersB
@@ -61,8 +66,8 @@ const AnswerAssignment: React.FC<AnswerAssignmentProps> = ({ user, assignment, o
         ai_comments_a: structResult.comments,
         ai_comments_b: essayResult.comments,
         submitted_at: new Date().toISOString(),
-        status: 'submitted', // Still 'submitted' because teacher hasn't verified, but has AI marks
-        teacher_marks: totalAiMarks, // Preliminary marks from AI
+        status: 'submitted',
+        teacher_marks: totalAiMarks,
         teacher_feedback: `[Semakan Automatik AI]: ${structResult.overallFeedback} ${essayResult.overallFeedback}`,
         ai_suggested_marks: totalAiMarks,
         ai_feedback: essayResult.overallFeedback
@@ -71,7 +76,6 @@ const AnswerAssignment: React.FC<AnswerAssignmentProps> = ({ user, assignment, o
       onSubmit(sub);
     } catch (error) {
       console.error("AI Grading failed:", error);
-      // Fallback submission if AI fails
       const fallbackSub: Submission = {
         id: `sub_${Date.now()}`,
         assignment_id: assignment.id,
@@ -88,98 +92,152 @@ const AnswerAssignment: React.FC<AnswerAssignmentProps> = ({ user, assignment, o
     } finally {
       setIsSubmitting(false);
     }
+  }, [assignment, answersA, answersB, user, onSubmit]);
+
+  const handleNext = () => {
+    if (currentStep === 'A') {
+      setCurrentStep(0);
+      setTimeLeft(1800); // Reset timer for first essay
+    } else {
+      const nextIdx = (currentStep as number) + 1;
+      if (nextIdx < assignment.section_b_questions.length) {
+        setCurrentStep(nextIdx);
+        setTimeLeft(1800); // Reset timer for next essay
+      } else {
+        finishExam();
+      }
+    }
   };
+
+  // Timer Effect
+  useEffect(() => {
+    if (isSubmitting) return;
+
+    const timer = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          handleNext();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [currentStep, isSubmitting]);
 
   if (isSubmitting) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-50">
         <div className="w-24 h-24 border-8 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-8"></div>
-        <h2 className="text-2xl font-black text-slate-900 mb-2">Pemeriksaan Pintar Sedang Berjalan</h2>
+        <h2 className="text-2xl font-black text-slate-900 mb-2">Penilaian Pintar Berjalan</h2>
         <p className="text-slate-500 font-medium animate-pulse">{statusMessage}</p>
-        <div className="mt-8 max-w-sm text-center">
-          <p className="text-xs text-slate-400 leading-relaxed uppercase tracking-widest font-bold">Sila jangan tutup pelayar anda. AI kami sedang menganalisis fakta, taakulan, dan gaya komunikasi anda berdasarkan Rubrik STPM.</p>
-        </div>
       </div>
     );
   }
 
   return (
-    <div className="p-6 bg-slate-50 min-h-screen text-slate-900">
+    <div 
+      className="p-6 bg-slate-50 min-h-screen select-none"
+      onContextMenu={(e) => e.preventDefault()}
+    >
       <div className="max-w-4xl mx-auto space-y-6">
-        <div className="flex justify-between items-center">
-          <div>
-            <h2 className="text-2xl font-black">{assignment.title}</h2>
-            <p className="text-slate-500 text-sm">Lengkapkan semua soalan untuk menerima skor AI segera.</p>
+        {/* Exam Header & Timer */}
+        <div className="sticky top-0 z-30 bg-white/90 backdrop-blur-md p-4 border rounded-2xl shadow-lg flex justify-between items-center mb-6">
+          <div className="flex items-center gap-4">
+            <div className={`px-4 py-2 rounded-xl font-black text-lg ${timeLeft < 300 ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-blue-600 text-white'}`}>
+              ⏱️ {formatTime(timeLeft)}
+            </div>
+            <div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Peringkat Sekarang</p>
+              <h4 className="font-bold text-slate-900">
+                {currentStep === 'A' ? 'Bahagian A: Soalan Struktur' : `Bahagian B: Soalan Esei ${(currentStep as number) + 1}`}
+              </h4>
+            </div>
           </div>
-          <Button variant="ghost" onClick={onCancel} disabled={isSubmitting}>Batal</Button>
+          <div className="text-right">
+             <span className="text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-full border border-blue-100 uppercase tracking-tighter">
+                {currentStep === 'A' ? `Soalan 1-5` : `Esei ${(currentStep as number) + 1} dari ${assignment.section_b_questions.length}`}
+             </span>
+          </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-8 pb-10">
-          <Card className="space-y-6 border-l-4 border-blue-600 shadow-lg">
-            <div className="border-b pb-4">
-              <h3 className="text-xl font-bold text-blue-800">Bahagian A: Struktur (20 Markah)</h3>
-              <p className="text-sm text-slate-500 mt-1">Jawab semua soalan pendek berikut.</p>
-            </div>
-            
-            <div className="space-y-8">
-              {assignment.section_a_questions.map((q, idx) => (
-                <div key={idx} className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-100">
-                  <p className="text-slate-800 font-bold flex gap-2">
-                    <span className="text-blue-600">{idx + 1}.</span>
-                    <span>{q}</span>
-                  </p>
-                  <Input 
-                    placeholder={`Taip jawapan anda untuk soalan ${idx + 1}...`}
-                    multiline 
-                    rows={4} 
-                    value={answersA[idx]} 
-                    onChange={(e) => handleUpdateAnswerA(idx, e.target.value)} 
-                    required 
-                  />
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          <Card className="space-y-6 border-l-4 border-indigo-600 shadow-lg">
-            <div className="border-b pb-4">
-              <h3 className="text-xl font-bold text-indigo-800">Bahagian B: Esei ({assignment.section_b_questions.length * 20} Markah)</h3>
-              <p className="text-sm text-slate-500 mt-1">AI akan menyemak esei anda berdasarkan kriteria Pengetahuan, Taakulan, dan Komunikasi.</p>
-            </div>
-
-            <div className="space-y-10">
-              {assignment.section_b_questions.map((q, idx) => (
-                <div key={idx} className="space-y-4">
-                  <div className="p-4 bg-indigo-50 rounded-xl border border-indigo-100">
-                    <p className="text-indigo-900 font-bold flex gap-2">
-                      <span className="text-indigo-600 uppercase tracking-wider">Esei {idx + 1}:</span>
-                      <span>{q}</span>
-                    </p>
+        {/* Section A Content */}
+        {currentStep === 'A' && (
+          <div className="space-y-8 animate-fade-in">
+            <Card className="border-l-4 border-blue-600 shadow-xl">
+              <h3 className="text-xl font-bold text-blue-800 border-b pb-4 mb-6">Bahagian A: Struktur (20 Markah)</h3>
+              <div className="space-y-10">
+                {assignment.section_a_questions.map((q, idx) => (
+                  <div key={idx} className="space-y-4">
+                    <p className="font-bold text-slate-800 leading-relaxed"><span className="text-blue-600 mr-2">{idx+1}.</span>{q}</p>
+                    <textarea
+                      className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all h-32 bg-slate-50 font-medium"
+                      placeholder="Taip jawapan anda di sini..."
+                      value={answersA[idx]}
+                      onChange={(e) => {
+                        const newA = [...answersA];
+                        newA[idx] = e.target.value;
+                        setAnswersA(newA);
+                      }}
+                      onPaste={preventActions}
+                      onCopy={preventActions}
+                      onCut={preventActions}
+                    />
                   </div>
-                  <Input 
-                    label="Ruangan Jawapan Esei:"
-                    placeholder={`Tulis esei anda untuk soalan ${idx + 1} dengan mendalam...`}
-                    multiline 
-                    rows={15} 
-                    value={answersB[idx]} 
-                    onChange={(e) => handleUpdateAnswerB(idx, e.target.value)} 
-                    required 
-                  />
-                </div>
-              ))}
+                ))}
+              </div>
+            </Card>
+            <div className="flex justify-end">
+              <Button onClick={handleNext} className="px-10 py-4 text-lg">Hantar Bahagian A & Mula Esei →</Button>
             </div>
-          </Card>
-
-          <div className="flex justify-end gap-4 sticky bottom-6 bg-white/90 backdrop-blur-md p-5 border rounded-3xl shadow-2xl z-20">
-            <Button variant="ghost" onClick={onCancel} className="px-8" disabled={isSubmitting}>Batal</Button>
-            <Button type="submit" className="px-12 py-4 text-lg bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-200" disabled={isSubmitting}>
-              <svg className="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Hantar & Terima Skor AI
-            </Button>
           </div>
-        </form>
+        )}
+
+        {/* Section B Content (Step-by-step) */}
+        {typeof currentStep === 'number' && (
+          <div className="animate-fade-in">
+            <Card className="border-l-4 border-indigo-600 shadow-xl space-y-6">
+              <h3 className="text-xl font-bold text-indigo-800 border-b pb-4">Bahagian B: Soalan Esei (20 Markah)</h3>
+              <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100">
+                <p className="text-indigo-900 font-black text-lg leading-relaxed">
+                  {assignment.section_b_questions[currentStep]}
+                </p>
+              </div>
+              <textarea
+                className="w-full px-6 py-5 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all h-[500px] bg-slate-50 font-medium text-lg"
+                placeholder="Tulis esei anda dengan mendalam. Pastikan anda menggunakan fakta, hujah dan kesimpulan yang jelas..."
+                value={answersB[currentStep]}
+                onChange={(e) => {
+                  const newB = [...answersB];
+                  newB[currentStep] = e.target.value;
+                  setAnswersB(newB);
+                }}
+                onPaste={preventActions}
+                onCopy={preventActions}
+                onCut={preventActions}
+              />
+            </Card>
+            <div className="flex justify-end mt-8">
+              <Button onClick={handleNext} className="px-12 py-4 text-lg bg-indigo-600 hover:bg-indigo-700 shadow-xl shadow-indigo-100">
+                {currentStep === assignment.section_b_questions.length - 1 ? 'Selesaikan & Hantar Peperiksaan' : 'Simpan & Ke Esei Seterusnya →'}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-amber-50 p-6 rounded-2xl border border-amber-200 mt-10">
+          <p className="text-xs font-black text-amber-700 uppercase tracking-widest mb-1 flex items-center gap-2">
+             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" /></svg>
+             Peraturan Peperiksaan:
+          </p>
+          <ul className="text-xs text-amber-800 font-medium list-disc ml-5 space-y-1">
+            <li>Pemasa akan berjalan secara automatik. Sila peka dengan baki masa yang ada.</li>
+            <li>Fungsi klik kanan, salin dan tampal adalah dilarang sama sekali.</li>
+            <li>Jika masa tamat, jawapan anda akan disimpan dan dihantar secara automatik.</li>
+          </ul>
+        </div>
       </div>
     </div>
   );
